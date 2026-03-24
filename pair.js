@@ -14,118 +14,100 @@ const {
 const { upload } = require("./mega");
 
 function removeFile(FilePath) {
-  if (!fs.existsSync(FilePath)) return false;
-  fs.rmSync(FilePath, { recursive: true, force: true });
+  if (fs.existsSync(FilePath)) {
+    fs.rmSync(FilePath, { recursive: true, force: true });
+  }
 }
 
 router.get("/", async (req, res) => {
   let num = req.query.number;
+  if (!num) return res.send({ error: "Number is required" });
+
   async function RobinPair() {
+    // පරණ සෙෂන් තිබේ නම් ඒවා ඉවත් කර අලුතින්ම පටන් ගැනීම
+    removeFile("./session");
+    
     const { state, saveCreds } = await useMultiFileAuthState(`./session`);
+    
     try {
       let RobinPairWeb = makeWASocket({
         auth: {
           creds: state.creds,
-          keys: makeCacheableSignalKeyStore(
-            state.keys,
-            pino({ level: "fatal" }).child({ level: "fatal" })
-          ),
+          keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "fatal" })),
         },
         printQRInTerminal: false,
-        logger: pino({ level: "fatal" }).child({ level: "fatal" }),
-        browser: Browsers.macOS("Safari"),
+        logger: pino({ level: "fatal" }),
+        // Browser එක Chrome ලෙස සැකසීම වඩාත් ස්ථාවරයි
+        browser: ["Chrome (Linux)", "Chrome", "1.0.0"], 
       });
 
+      // Pairing Code එක ඉල්ලීම
       if (!RobinPairWeb.authState.creds.registered) {
-        await delay(1500);
+        await delay(3000); // සර්වර් එක සූදානම් වීමට තත්පර 3ක විරාමයක්
         num = num.replace(/[^0-9]/g, "");
-        const code = await RobinPairWeb.requestPairingCode(num);
-        if (!res.headersSent) {
-          await res.send({ code });
+        
+        try {
+          const code = await RobinPairWeb.requestPairingCode(num);
+          if (!res.headersSent) {
+            await res.send({ code });
+          }
+        } catch (error) {
+          console.error("Error requesting pairing code:", error);
+          if (!res.headersSent) res.send({ code: "Error requesting code" });
         }
       }
 
       RobinPairWeb.ev.on("creds.update", saveCreds);
+      
       RobinPairWeb.ev.on("connection.update", async (s) => {
         const { connection, lastDisconnect } = s;
+
         if (connection === "open") {
           try {
-            await delay(10000);
-            const sessionPrabath = fs.readFileSync("./session/creds.json");
-
+            await delay(5000); // සම්බන්ධ වූ පසු දත්ත Save වීමට කාලය දීම
             const auth_path = "./session/";
             const user_jid = jidNormalizedUser(RobinPairWeb.user.id);
 
-            function randomMegaId(length = 6, numberLength = 4) {
-              const characters =
-                "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-              let result = "";
-              for (let i = 0; i < length; i++) {
-                result += characters.charAt(
-                  Math.floor(Math.random() * characters.length)
-                );
-              }
-              const number = Math.floor(
-                Math.random() * Math.pow(10, numberLength)
-              );
-              return `${result}${number}`;
-            }
-
+            // Mega එකට Upload කිරීමේ කොටස
             const mega_url = await upload(
               fs.createReadStream(auth_path + "creds.json"),
-              `${randomMegaId()}.json`
+              `${Math.random().toString(36).substring(2, 10)}.json`
             );
 
-            const string_session = mega_url.replace(
-              "https://mega.nz/file/",
-              ""
-            );
+            const string_session = mega_url.replace("https://mega.nz/file/", "");
+            
+            const welcomeMsg = `*ROBIN BOT CONNECTED*\n\nSession ID: \`${string_session}\`\n\nමෙම ID එක config.js එකට ඇතුළත් කරන්න.`;
 
-            const sid = `*ROBIN [The powerful WA BOT]*\n\n👉 ${string_session} 👈\n\n*This is the your Session ID, copy this id and paste into config.js file*\n\n*You can ask any question using this link*\n\n*wa.me/message/WKGLBR2PCETWD1*\n\n*You can join my whatsapp group*\n\n*https://chat.whatsapp.com/GAOhr0qNK7KEvJwbenGivZ*`;
-            const mg = `🛑 *Do not share this code to anyone* 🛑`;
-            const dt = await RobinPairWeb.sendMessage(user_jid, {
-              image: {
-                url: "https://raw.githubusercontent.com/Dark-Robin/Bot-Helper/refs/heads/main/autoimage/Bot%20robin%20WP.jpg",
-              },
-              caption: sid,
+            // පරිශීලකයාට තොරතුරු යැවීම
+            await RobinPairWeb.sendMessage(user_jid, { text: string_session });
+            await RobinPairWeb.sendMessage(user_jid, { 
+                image: { url: "https://raw.githubusercontent.com/Dark-Robin/Bot-Helper/refs/heads/main/autoimage/Bot%20robin%20WP.jpg" },
+                caption: welcomeMsg 
             });
-            const msg = await RobinPairWeb.sendMessage(user_jid, {
-              text: string_session,
-            });
-            const msg1 = await RobinPairWeb.sendMessage(user_jid, { text: mg });
+
+            console.log("Session Successful!");
+            await delay(2000);
+            removeFile("./session"); // ආරක්ෂාව සඳහා සෙෂන් ෆෝල්ඩරය මැකීම
           } catch (e) {
-            exec("pm2 restart prabath");
+            console.log("Error in open connection:", e);
           }
-
-          await delay(100);
-          return await removeFile("./session");
-          process.exit(0);
-        } else if (
-          connection === "close" &&
-          lastDisconnect &&
-          lastDisconnect.error &&
-          lastDisconnect.error.output.statusCode !== 401
-        ) {
-          await delay(10000);
-          RobinPair();
+        } 
+        
+        if (connection === "close") {
+          let reason = lastDisconnect?.error?.output?.statusCode;
+          if (reason !== 401) { // 401 යනු Logged Out වීමයි
+             // අවශ්‍ය නම් මෙතනදී නැවත සම්බන්ධ වීමට උත්සාහ කළ හැක
+          }
         }
       });
+
     } catch (err) {
-      exec("pm2 restart Robin-md");
-      console.log("service restarted");
-      RobinPair();
-      await removeFile("./session");
-      if (!res.headersSent) {
-        await res.send({ code: "Service Unavailable" });
-      }
+      console.log("Service Error:", err);
+      if (!res.headersSent) res.send({ code: "Service Unavailable" });
     }
   }
+  
   return await RobinPair();
-});
-
-process.on("uncaughtException", function (err) {
-  console.log("Caught exception: " + err);
-  exec("pm2 restart Robin");
 });
 
 module.exports = router;
